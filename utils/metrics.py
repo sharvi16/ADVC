@@ -7,7 +7,7 @@ as torch.Tensor and return a Python float in [0, 1].
 
 import csv
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -45,22 +45,36 @@ def robust_accuracy(adv_logits: torch.Tensor, labels: torch.Tensor) -> float:
     return (preds == labels).float().mean().item()
 
 
-def attack_success_rate(adv_logits: torch.Tensor, labels: torch.Tensor) -> float:
+def attack_success_rate(
+    clean_logits: torch.Tensor,
+    adv_logits: torch.Tensor,
+    labels: torch.Tensor,
+) -> float:
     """Fraction of adversarial examples that fool the model (untargeted).
 
-    ASR = 1 - robust_accuracy when evaluated on originally-correct examples only.
-    Here we compute it over the full batch for simplicity; callers can pre-filter
-    to only examples the clean model got right if a stricter definition is needed.
+    ASR is computed **only over examples the clean model originally classified
+    correctly**.  This matches the standard definition in the adversarial
+    robustness literature — an attack only "succeeds" when it flips a correct
+    prediction, not when it misclassifies an already-wrong input.
+
+    If the clean model has 0 correct predictions, returns 0.0.
 
     Args:
-        adv_logits: (N, C) model outputs on adversarial inputs.
-        labels: (N,) integer ground-truth class indices.
+        clean_logits: (N, C) model outputs on clean inputs.
+        adv_logits:   (N, C) model outputs on adversarial inputs.
+        labels:       (N,) integer ground-truth class indices.
 
     Returns:
         Attack success rate in [0, 1].
     """
-    preds = adv_logits.argmax(dim=1)
-    return (preds != labels).float().mean().item()
+    clean_preds = clean_logits.argmax(dim=1)
+    correct_mask = (clean_preds == labels)
+    n_correct = correct_mask.sum().item()
+    if n_correct == 0:
+        return 0.0
+    adv_preds   = adv_logits[correct_mask].argmax(dim=1)
+    true_labels = labels[correct_mask]
+    return (adv_preds != true_labels).float().mean().item()
 
 
 def robustness_gap(
@@ -141,7 +155,7 @@ def save_results_to_csv(
     file_exists = os.path.isfile(csv_path)
 
     row = {
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "model": model,
         "compression": compression,
         "defense": defense,

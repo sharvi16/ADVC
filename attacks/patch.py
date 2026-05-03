@@ -64,6 +64,11 @@ class PatchAttack:
         """
         Generate adversarial examples by optimising a patch placed on each image.
 
+        A different random top-left corner is sampled for each image in the batch
+        so that the optimised patch learns to be effective regardless of its
+        placement (location-invariant).  This better reflects real-world
+        adversarial patch deployments and produces a higher, less-biased ASR.
+
         Args:
             images: ImageNet-normalised input batch, shape (N, 3, H, W).
             labels: Ground-truth class indices, shape (N,).
@@ -87,18 +92,19 @@ class PatchAttack:
         # Un-normalise to [0, 1] for patch compositing
         images_unnorm = images * std_t + mean_t
         images_unnorm = images_unnorm.clamp(0.0, 1.0)
-        assert images_unnorm.max().item() <= 1.0 + 1e-3, (
-            f"Un-normalised images still out of [0, 1]: "
-            f"max={images_unnorm.max().item():.4f}"
-        )
 
-        # Random top-left corner — same placement for all images in the batch
-        row = torch.randint(0, H - ps + 1, (1,)).item()
-        col = torch.randint(0, W - ps + 1, (1,)).item()
+        # Sample a different random top-left corner for each image in the batch.
+        # Using per-image locations encourages the patch to be location-invariant
+        # and avoids underestimating ASR (a single shared location is often the
+        # easiest location to defend against).
+        rows = [torch.randint(0, H - ps + 1, (1,)).item() for _ in range(B)]
+        cols = [torch.randint(0, W - ps + 1, (1,)).item() for _ in range(B)]
 
-        # Spatial mask — 1 where patch goes, 0 elsewhere; broadcast over batch
-        mask = torch.zeros(1, C, H, W, device=device)
-        mask[:, :, row:row + ps, col:col + ps] = 1.0
+        # Build the per-image binary mask once (fixed throughout optimisation).
+        # Shape: (B, C, H, W); 1 where the patch sits, 0 elsewhere.
+        mask = torch.zeros(B, C, H, W, device=device)
+        for b in range(B):
+            mask[b, :, rows[b]:rows[b] + ps, cols[b]:cols[b] + ps] = 1.0
 
         # Initialise patch uniformly in [0, 1]
         patch = torch.rand(C, ps, ps, device=device).requires_grad_(True)
@@ -108,12 +114,18 @@ class PatchAttack:
             if patch.grad is not None:
                 patch.grad.zero_()
 
-            # Embed patch into a full-image canvas via differentiable padding.
-            # F.pad operates on the last two dims: (left, right, top, bottom).
-            patch_full = F.pad(
-                patch,
-                (col, W - col - ps, row, H - row - ps),
-            ).unsqueeze(0).expand(B, -1, -1, -1)  # (B, C, H, W)
+            # Embed patch into a per-image full-size canvas via differentiable
+            # padding (F.pad preserves gradients).  Stack into (B, C, H, W).
+            # F.pad order: (left, right, top, bottom) on last two dims.
+            patch_canvases = []
+            for b in range(B):
+                r, c = rows[b], cols[b]
+                canvas = F.pad(
+                    patch,
+                    (c, W - c - ps, r, H - r - ps),
+                )  # (C, H, W) — gradients flow through F.pad
+                patch_canvases.append(canvas)
+            patch_full = torch.stack(patch_canvases, dim=0)  # (B, C, H, W)
 
             # Composite in [0, 1] space, re-normalise for model forward pass
             adv_unnorm = images_unnorm.detach() * (1.0 - mask) + patch_full * mask
@@ -130,15 +142,18 @@ class PatchAttack:
 
         # Final composite — return re-normalised images to match input range
         with torch.no_grad():
-            patch_full = F.pad(
-                patch,
-                (col, W - col - ps, row, H - row - ps),
-            ).unsqueeze(0).expand(B, -1, -1, -1)
+            patch_canvases = []
+            for b in range(B):
+                r, c = rows[b], cols[b]
+                canvas = F.pad(patch, (c, W - c - ps, r, H - r - ps))
+                patch_canvases.append(canvas)
+            patch_full = torch.stack(patch_canvases, dim=0)
             adv_unnorm = images_unnorm * (1.0 - mask) + patch_full * mask
             adv_unnorm = adv_unnorm.clamp(0.0, 1.0)
             adv_images = (adv_unnorm - mean_t) / std_t  # re-normalise
 
         return adv_images
+
 
 
 def build_attack(

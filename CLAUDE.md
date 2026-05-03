@@ -255,7 +255,10 @@ Implemented in `attacks/combined.py`.
 Fine-tune the already-compressed model on FGSM adversarial inputs.
 
 AT parameters:
-- Optimizer: SGD, lr=0.01, momentum=0.9, weight_decay=1e-4
+- Optimizer: AdamW, per-compression LR (fp32: 1e-5, int8: 5e-6, int4: 1e-6), weight_decay=0.01
+- Backbone frozen; only last 4 transformer blocks + classifier head updated
+- LR schedule: linear warmup — lr/10 for epoch 1, full lr from epoch 2
+- Gradient clipping: max_norm=1.0 (prevents divergence on quantised weights)
 - Epochs: 7
 - AT epsilon: 8/255 — must always match attack epsilon
 - Checkpoint: save after every epoch to `results/checkpoints/at/` AND Drive

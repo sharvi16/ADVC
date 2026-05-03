@@ -359,7 +359,9 @@ def load_at_checkpoint(
             f"[phase2-AT] {compression:<6}: loading full model checkpoint "
             f"from {full_model_path} …"
         )
-        loaded_model = torch.load(str(full_model_path), map_location="cpu")
+        # INT4 full model must use weights_only=False — bitsandbytes NF4 tensors
+        # contain Python objects (quant_state) that require pickle to deserialise.
+        loaded_model = torch.load(str(full_model_path), map_location="cpu", weights_only=False)
         loaded_model.eval()
         print(f"[phase2-AT] {compression:<6}: full model checkpoint loaded.")
         return loaded_model
@@ -370,7 +372,7 @@ def load_at_checkpoint(
             f"[phase2-AT] {compression:<6}: loading state dict checkpoint "
             f"from {state_dict_path} …"
         )
-        state_dict = torch.load(str(state_dict_path), map_location="cpu")
+        state_dict = torch.load(str(state_dict_path), map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict)
         model.eval()
         print(f"[phase2-AT] {compression:<6}: state dict checkpoint loaded.")
@@ -532,7 +534,7 @@ def main() -> None:
                 continue
 
             rob_acc = robust_accuracy(adv_logits, clean_labels)
-            asr = attack_success_rate(adv_logits, clean_labels)
+            asr = attack_success_rate(clean_logits, adv_logits, clean_labels)
             rob_gap = robustness_gap(clean_logits, adv_logits, clean_labels)
 
             print(

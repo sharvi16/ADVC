@@ -508,6 +508,9 @@ def at_kd_train(
             # ── Combined loss ─────────────────────────────────────────────────
             loss = alpha * ce_loss + kd_weight * kl_loss
             loss.backward()
+            # Clip gradients to prevent divergence on INT8/INT4 quantised weights
+            # where activation outliers can cause large gradient magnitudes.
+            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             optimizer.step()
 
             batch_size = labels.size(0)
@@ -538,8 +541,10 @@ def at_kd_train(
             f"train_adv_acc={epoch_acc:.4f}"
         )
 
-        # Measure clean accuracy after the epoch and compare to baseline.
-        epoch_clean_acc = _measure_clean_acc(student, train_loader, str(student_device))
+        # Measure clean accuracy on the same fixed 500-image baseline_loader used
+        # before training.  Using train_loader (10 000 images) here costs 10+ min
+        # per epoch and evaluates on training data, not a held-out split.
+        epoch_clean_acc = _measure_clean_acc(student, baseline_loader, str(student_device))
         clean_drop = baseline_clean_acc - epoch_clean_acc
         print(
             f"[AT+KD] Epoch {epoch} clean_acc={epoch_clean_acc:.4f}  "

@@ -362,7 +362,7 @@ def main() -> None:
                 continue
 
             rob_acc = robust_accuracy(adv_logits, clean_labels)
-            asr = attack_success_rate(adv_logits, clean_labels)
+            asr = attack_success_rate(clean_logits, adv_logits, clean_labels)
             rob_gap = robustness_gap(clean_logits, adv_logits, clean_labels)
 
             print(

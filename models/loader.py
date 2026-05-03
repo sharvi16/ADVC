@@ -13,24 +13,32 @@ Usage:
 import torch
 import timm
 import yaml
+from pathlib import Path
 from typing import Literal
+
+# Absolute path to configs/base.yaml — resolved relative to this file so that
+# load_config() works regardless of the caller's working directory.
+_DEFAULT_CFG = Path(__file__).resolve().parent.parent / "configs" / "base.yaml"
 
 
 CompressionLevel = Literal["fp32", "int8", "int4"]
 ModelName = Literal["deit_small"]
 
 
-def load_config(config_path: str = "configs/base.yaml") -> dict:
+def load_config(config_path: str = None) -> dict:
     """
     Load the base YAML config.
 
     Args:
-        config_path: Path to base.yaml relative to project root.
+        config_path: Absolute or relative path to base.yaml.  Defaults to the
+                     configs/base.yaml that lives next to this file, so callers
+                     do not need to pass anything when running from any directory.
 
     Returns:
         config: Parsed config as a dictionary.
     """
-    with open(config_path, "r") as f:
+    path = config_path if config_path is not None else str(_DEFAULT_CFG)
+    with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
@@ -96,10 +104,12 @@ def _load_int8(timm_name: str, config: dict, device: str) -> torch.nn.Module:
             # it must be passed via BitsAndBytesConfig instead.
             bnb_config = BitsAndBytesConfig(load_in_8bit=True)
 
+            # Pin all layers to one device to avoid silent multi-GPU splits when
+            # device_map="auto" is used with multi-GPU hosts.
             model = AutoModelForImageClassification.from_pretrained(
                 hf_name,
                 quantization_config=bnb_config,
-                device_map="auto",
+                device_map={"" : device},
             )
             return model
 
@@ -111,14 +121,20 @@ def _load_int8(timm_name: str, config: dict, device: str) -> torch.nn.Module:
             backend = "torch"
 
     if backend == "torch":
-        model = timm.create_model(timm_name, pretrained=True)
-        model = model.to("cpu")
-        model.qconfig = torch.quantization.get_default_qconfig("fbgemm")
-        torch.quantization.prepare(model, inplace=True)
-        torch.quantization.convert(model, inplace=True)
-        if device == "cuda":
-            print("[loader] Note: torch static quantization runs on CPU only.")
-        return model
+        # torch static quantization requires a calibration data loop between
+        # prepare() and convert() so that activation observers can collect
+        # min/max statistics.  Without calibration every activation range is
+        # [0, 0] and the quantised model produces garbage outputs.
+        # This pipeline does not supply calibration data to load_model(), so
+        # the torch fallback is not usable as-is.
+        # Resolution: ensure bitsandbytes is installed (pip install bitsandbytes)
+        # or add a calibration_loader argument to load_model() / _load_int8().
+        raise RuntimeError(
+            "[loader] torch static quantization INT8 fallback requires a "
+            "calibration data loop between prepare() and convert() — not "
+            "provided in the current pipeline.\n"
+            "Fix: pip install bitsandbytes   (or add calibration_loader support)"
+        )
 
     raise ValueError(f"Unknown INT8 backend: {backend!r}")
 
@@ -142,10 +158,13 @@ def _load_int4(timm_name: str, config: dict, device: str) -> torch.nn.Module:
 
     hf_name = _get_hf_name(timm_name, config)
 
+    # Pin all layers to one device.  device_map="auto" can split layers across
+    # multiple GPUs on multi-GPU hosts, causing next(model.parameters()).device
+    # to return only the first layer's device and breaking tensor routing.
     model = AutoModelForImageClassification.from_pretrained(
         hf_name,
         quantization_config=bnb_config,
-        device_map="auto",
+        device_map={"" : device},
     )
     return model
 
