@@ -114,18 +114,13 @@ class PatchAttack:
             if patch.grad is not None:
                 patch.grad.zero_()
 
-            # Embed patch into a per-image full-size canvas via differentiable
-            # padding (F.pad preserves gradients).  Stack into (B, C, H, W).
-            # F.pad order: (left, right, top, bottom) on last two dims.
-            patch_canvases = []
+            # Embed patch directly into a full-size batch canvas.
+            # Slice assignment is fully differentiable and vastly faster/more
+            # memory-efficient than F.pad + torch.stack.
+            patch_full = torch.zeros(B, C, H, W, device=device, dtype=images.dtype)
             for b in range(B):
                 r, c = rows[b], cols[b]
-                canvas = F.pad(
-                    patch,
-                    (c, W - c - ps, r, H - r - ps),
-                )  # (C, H, W) — gradients flow through F.pad
-                patch_canvases.append(canvas)
-            patch_full = torch.stack(patch_canvases, dim=0)  # (B, C, H, W)
+                patch_full[b, :, r:r+ps, c:c+ps] = patch
 
             # Composite in [0, 1] space, re-normalise for model forward pass
             adv_unnorm = images_unnorm.detach() * (1.0 - mask) + patch_full * mask
@@ -142,12 +137,10 @@ class PatchAttack:
 
         # Final composite — return re-normalised images to match input range
         with torch.no_grad():
-            patch_canvases = []
+            patch_full = torch.zeros(B, C, H, W, device=device, dtype=images.dtype)
             for b in range(B):
                 r, c = rows[b], cols[b]
-                canvas = F.pad(patch, (c, W - c - ps, r, H - r - ps))
-                patch_canvases.append(canvas)
-            patch_full = torch.stack(patch_canvases, dim=0)
+                patch_full[b, :, r:r+ps, c:c+ps] = patch
             adv_unnorm = images_unnorm * (1.0 - mask) + patch_full * mask
             adv_unnorm = adv_unnorm.clamp(0.0, 1.0)
             adv_images = (adv_unnorm - mean_t) / std_t  # re-normalise
