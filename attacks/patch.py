@@ -110,20 +110,21 @@ class PatchAttack:
         patch = torch.rand(C, ps, ps, device=device).requires_grad_(True)
 
         self.model.eval()
+        
+        # Precompute the fixed background (everything except the patch)
+        bg = images_unnorm.detach() * (1.0 - mask)
+
         for _ in range(self.steps):
             if patch.grad is not None:
                 patch.grad.zero_()
 
-            # Embed patch directly into a full-size batch canvas.
-            # Slice assignment is fully differentiable and vastly faster/more
-            # memory-efficient than F.pad + torch.stack.
-            patch_full = torch.zeros(B, C, H, W, device=device, dtype=images.dtype)
+            # Embed patch directly into the background.
+            # bg.clone() preserves gradients flowing back to the patch assigned via slicing.
+            adv_unnorm = bg.clone()
             for b in range(B):
                 r, c = rows[b], cols[b]
-                patch_full[b, :, r:r+ps, c:c+ps] = patch
+                adv_unnorm[b, :, r:r+ps, c:c+ps] = patch
 
-            # Composite in [0, 1] space, re-normalise for model forward pass
-            adv_unnorm = images_unnorm.detach() * (1.0 - mask) + patch_full * mask
             adv_unnorm = adv_unnorm.clamp(0.0, 1.0)
             adv_norm = (adv_unnorm - mean_t) / std_t
 
@@ -135,13 +136,13 @@ class PatchAttack:
                 patch.data.add_(self.lr * patch.grad.sign())
                 patch.data.clamp_(0.0, 1.0)
 
-        # Final composite — return re-normalised images to match input range
+        # Final composite \u2014 return re-normalised images to match input range
         with torch.no_grad():
-            patch_full = torch.zeros(B, C, H, W, device=device, dtype=images.dtype)
+            adv_unnorm = bg.clone()
             for b in range(B):
                 r, c = rows[b], cols[b]
-                patch_full[b, :, r:r+ps, c:c+ps] = patch
-            adv_unnorm = images_unnorm * (1.0 - mask) + patch_full * mask
+                adv_unnorm[b, :, r:r+ps, c:c+ps] = patch
+            
             adv_unnorm = adv_unnorm.clamp(0.0, 1.0)
             adv_images = (adv_unnorm - mean_t) / std_t  # re-normalise
 
