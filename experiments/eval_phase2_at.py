@@ -21,8 +21,10 @@ Usage:
 
 import argparse
 import csv
+import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 import torch
@@ -53,44 +55,46 @@ DEFENSE_NAME = "at"
 PHASE = 2
 ATTACK_NAMES = ["fgsm", "pgd", "patch"]
 
-# ── ImageNette → ImageNet-1k label remapping ──────────────────────────────────
-
-_IMAGENETTE_TO_IMAGENET: dict[str, int] = {
-    "n01440764": 0,    # tench
-    "n02102040": 217,  # English springer
-    "n02979186": 482,  # cassette player
-    "n03000684": 491,  # chain saw
-    "n03028079": 497,  # church
-    "n03394916": 566,  # French horn
-    "n03417042": 569,  # garbage truck
-    "n03425413": 571,  # gas pump
-    "n03445777": 574,  # golf ball
-    "n03888257": 701,  # parachute
-}
+_CLASS_INDEX_URLS = [
+    "https://storage.googleapis.com/download.tensorflow.org/data/imagenet_class_index.json",
+    "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_class_index.json",
+    "https://s3.amazonaws.com/deep-learning-models/image-models/imagenet_class_index.json",
+]
 
 
-def _is_synset_id(name: str) -> bool:
-    """Return True if name looks like an ImageNet synset ID (e.g. 'n01440764')."""
-    return len(name) == 9 and name[0] == "n" and name[1:].isdigit()
+def _get_synset_to_id() -> dict:
+    """Return {synset_id_str: label_int} mapping from canonical ImageNet index."""
+    for url in _CLASS_INDEX_URLS:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                class_index = json.load(resp)
+            return {v[0]: int(k) for k, v in class_index.items()}
+        except Exception:
+            pass
+    raise RuntimeError("Failed to fetch imagenet_class_index.json for label remapping.")
 
 
 def _remap_subset_labels(dataset: ImageFolder) -> ImageFolder:
-    """Remap ImageFolder targets to ImageNet-1k indices.
+    """Remap ImageFolder targets to true ImageNet-1k indices.
 
-    Uses folder-name format (not class count) to detect full ImageNet:
-    synset-ID folders (n01440764) sort alphabetically == ImageNet label order.
+    If classes are missing (e.g., 993 instead of 1000), ImageFolder's alphabetical
+    indexing (0-992) will NOT match the model's expected labels. This function
+    fetches the canonical mapping and corrects the dataset labels.
     """
-    sample_class = dataset.classes[0] if dataset.classes else ""
-    if _is_synset_id(sample_class):
-        print(f"[data] Synset-ID folders detected ({len(dataset.classes)} classes) "
-              f"\u2014 labels already correct, skipping remap.")
+    if len(dataset.classes) == 1000:
         return dataset
-    print("[data] Non-synset folders — applying ImageNette\u2192ImageNet remap.")
+
+    print(f"[data] Subset detected ({len(dataset.classes)}/1000 classes). Fetching true ImageNet labels...")
+    synset_to_id = _get_synset_to_id()
+
     new_samples = []
     for path, lbl in dataset.samples:
         synset = dataset.classes[lbl]
-        new_lbl = _IMAGENETTE_TO_IMAGENET.get(synset, lbl)
-        new_samples.append((path, new_lbl))
+        if synset in synset_to_id:
+            new_samples.append((path, synset_to_id[synset]))
+        else:
+            new_samples.append((path, lbl))
+            
     dataset.samples = new_samples
     dataset.targets = [lbl for _, lbl in new_samples]
     return dataset
