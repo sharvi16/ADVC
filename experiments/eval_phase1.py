@@ -201,7 +201,15 @@ def run_adv_eval(
         all_adv_logits: (N, C) tensor on CPU.
     """
     adv_logits_list = []
-    for images, labels in loader:
+    
+    # Attempt to import tqdm for progress bar; fallback to standard loop if missing
+    try:
+        from tqdm import tqdm
+        loader_iter = tqdm(loader, desc="           batches", leave=False)
+    except ImportError:
+        loader_iter = loader
+
+    for images, labels in loader_iter:
         images = images.to(model_device)
         labels = labels.to(model_device)
         adv_images = attack(images, labels)
