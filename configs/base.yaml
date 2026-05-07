@@ -85,7 +85,7 @@ at_kd:
 # Evaluation
 eval:
   batch_size: 64
-  num_workers: 2
+  num_workers: 0    # MUST BE 0 FOR COLAB to prevent silent DataLoader deadlocks
   latency_warmup_runs: 10 
   latency_measure_runs: 100 
 
