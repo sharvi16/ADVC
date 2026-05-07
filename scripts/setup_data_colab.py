@@ -21,10 +21,12 @@ Both produce:
 """
 
 import argparse
+import json
 import os
 import random
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -34,6 +36,44 @@ N_IMAGES = 5000        # validation images  — must match dataset.val_subset_si
 N_TRAIN_IMAGES = 10000 # training images    — must match dataset.train_subset_size in base.yaml
 VAL_DIR   = "data/imagenet/val"
 TRAIN_DIR = "data/imagenet/train"
+
+# ── Label index → synset ID mapping ─────────────────────────────────────────
+#
+# HuggingFace imagenet-1k dataset.features["label"].names returns HUMAN-READABLE
+# strings like "tench", "goldfish" — NOT synset IDs like "n01440764".
+# Using those names as folder names causes ImageFolder's alphabetical sort to
+# produce a completely different label order from what the model expects,
+# giving clean_acc ≈ 0.0002 (worse than random).
+#
+# Fix: use PyTorch's canonical imagenet_class_index.json which maps
+# integer label → [synset_id, human_name] in the correct ImageNet-1k order.
+# e.g. {"0": ["n01440764", "tench"], "1": ["n01443537", "goldfish"], ...}
+# Folder names become n01440764/, n01443537/, … which sort alphabetically
+# in the SAME order as ImageNet-1k labels — matching what the model expects.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CLASS_INDEX_URL = (
+    "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_class_index.json"
+)
+
+
+def _get_label_to_synset() -> dict:
+    """Return {label_int: synset_id_str} from PyTorch's imagenet_class_index.json.
+
+    Fetched once over HTTPS; tiny file (78 KB).
+    Falls back to zero-padded class names if the download fails.
+    """
+    try:
+        with urllib.request.urlopen(_CLASS_INDEX_URL, timeout=15) as resp:
+            class_index = json.load(resp)
+        mapping = {int(k): v[0] for k, v in class_index.items()}
+        print(f"[setup] Label → synset mapping loaded ({len(mapping)} classes).")
+        return mapping
+    except Exception as exc:
+        print(f"[setup] WARNING: could not fetch class index ({exc}).")
+        print("[setup] Falling back to zero-padded class names — accuracy will be WRONG.")
+        return {i: f"class_{i:04d}" for i in range(1000)}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # METHOD A — HuggingFace datasets streaming (recommended)
@@ -91,21 +131,16 @@ def setup_method_a():
     )
     dataset = dataset.shuffle(seed=SEED, buffer_size=5000)
 
-    # Build label index → synset name mapping from dataset features
-    label_to_synset = {}
+    # IMPORTANT: do NOT use dataset.features["label"].names for folder names.
+    # That returns human-readable strings ("tench", "goldfish") which sort
+    # alphabetically in a different order than ImageNet-1k label indices,
+    # causing clean_acc ≈ 0.0002.  Use synset IDs from PyTorch instead.
+    label_to_synset = _get_label_to_synset()
 
     saved = 0
     for example in dataset:
         if saved >= N_IMAGES:
             break
-
-        # Build mapping on first example
-        if not label_to_synset:
-            try:
-                names = dataset.features["label"].names
-                label_to_synset = {i: name for i, name in enumerate(names)}
-            except Exception:
-                label_to_synset = {i: f"class_{i:04d}" for i in range(1000)}
 
         label_id: int = example["label"]
         image = example["image"]
@@ -259,20 +294,13 @@ def setup_train():
     )
     dataset = dataset.shuffle(seed=SEED, buffer_size=20000)
 
-    # Build label index → synset mapping from dataset features
-    label_to_synset = {}
+    # IMPORTANT: same fix as setup_method_a() — use synset IDs, not human names.
+    label_to_synset = _get_label_to_synset()
 
     saved = 0
     for example in dataset:
         if saved >= N_TRAIN_IMAGES:
             break
-
-        if not label_to_synset:
-            try:
-                names = dataset.features["label"].names
-                label_to_synset = {i: name for i, name in enumerate(names)}
-            except Exception:
-                label_to_synset = {i: f"class_{i:04d}" for i in range(1000)}
 
         label_id = example["label"]
         synset = label_to_synset.get(label_id, f"class_{label_id:04d}")
@@ -294,6 +322,7 @@ def setup_train():
 # ── Verification ──────────────────────────────────────────────────────────────
 
 def verify():
+    """Verify val dir loads correctly and folder names look like synset IDs."""
     try:
         from torchvision.datasets import ImageFolder
         ds = ImageFolder(VAL_DIR)
@@ -302,6 +331,17 @@ def verify():
         print(f"[verify]   classes : {len(ds.classes)}")
         if len(ds) < 100:
             print("[verify] WARNING: fewer than 100 images — check the setup.")
+        # Sanity-check folder names: synset IDs start with 'n' followed by 8 digits.
+        # Human-readable names (tench, goldfish …) would indicate the old bug.
+        sample_class = ds.classes[0]
+        if not (sample_class.startswith("n") and len(sample_class) == 9 and sample_class[1:].isdigit()):
+            print(
+                f"[verify] ERROR: first folder is '{sample_class}' — expected a synset ID "
+                "like 'n01440764'.  This means label_to_synset used human-readable names.\n"
+                "[verify] Delete the data directory and re-run setup to fix accuracy."
+            )
+        else:
+            print(f"[verify]   folder names look correct (e.g. '{sample_class}') ✓")
     except Exception as e:
         print(f"[verify] FAILED: {e}")
 
