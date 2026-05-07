@@ -27,11 +27,9 @@ import argparse
 import csv
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torchvision.transforms as T
 from torch.utils.data import DataLoader, Subset
 from torchvision.datasets import ImageFolder
@@ -39,7 +37,7 @@ from torchvision.datasets import ImageFolder
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
-from models.loader import load_config, load_model
+from models.loader import load_config, load_model, LogitsWrapper
 import attacks.fgsm as fgsm_mod
 import attacks.pgd as pgd_mod
 import attacks.patch as patch_mod
@@ -49,6 +47,7 @@ from utils.metrics import (
     robust_accuracy,
     attack_success_rate,
     robustness_gap,
+    save_results_to_csv,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -56,42 +55,7 @@ from utils.metrics import (
 RESULTS_FILE = "results/phase2_atkd_results.csv"
 DEFENSE_NAME = "at_kd"
 PHASE = 2
-FIELDNAMES = [
-    "timestamp",
-    "model",
-    "compression",
-    "defense",
-    "attack",
-    "clean_acc",
-    "robust_acc",
-    "asr",
-    "robustness_gap",
-    "phase",
-]
 ATTACK_NAMES = ["fgsm", "pgd", "patch"]
-
-
-# ── Logits normalisation wrapper ──────────────────────────────────────────────
-
-class LogitsWrapper(nn.Module):
-    """Unwrap HuggingFace model output to a plain (N, C) logits tensor.
-
-    timm models (fp32) already return a plain tensor.
-    HuggingFace models (int8 / int4 via transformers) return a dataclass with
-    a .logits attribute.  This wrapper makes both interfaces identical so that
-    torchattacks and the custom PatchAttack work across all compression levels.
-    """
-
-    def __init__(self, model: nn.Module) -> None:
-        super().__init__()
-        self.model = model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.model(x)
-        if hasattr(out, "logits"):
-            return out.logits
-        return out
-
 
 # ── ImageNette → ImageNet-1k label remapping ──────────────────────────────────
 
@@ -214,40 +178,9 @@ def load_completed_runs(results_path: str) -> set:
     return completed
 
 
-def append_row(
-    results_path: str,
-    model_name: str,
-    compression: str,
-    attack_name: str,
-    c_acc: float,
-    rob_acc: float,
-    asr: float,
-    rob_gap: float,
-) -> None:
-    """Append one result row; write CSV header if the file does not yet exist."""
-    Path(results_path).parent.mkdir(parents=True, exist_ok=True)
-    file_exists = os.path.isfile(results_path)
-    with open(results_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "model": model_name,
-            "compression": compression,
-            "defense": DEFENSE_NAME,
-            "attack": attack_name,
-            "clean_acc": round(c_acc, 6),
-            "robust_acc": round(rob_acc, 6),
-            "asr": round(asr, 6),
-            "robustness_gap": round(rob_gap, 6),
-            "phase": PHASE,
-        })
-
-
 # ── Inference helpers ─────────────────────────────────────────────────────────
 
-def infer_model_device(model: nn.Module) -> str:
+def infer_model_device(model) -> str:
     """Return the device string for the first model parameter found."""
     for p in model.parameters():
         return str(p.device)
@@ -256,7 +189,7 @@ def infer_model_device(model: nn.Module) -> str:
 
 @torch.no_grad()
 def run_clean_eval(
-    model: nn.Module,
+    model,
     loader: DataLoader,
     model_device: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -266,6 +199,7 @@ def run_clean_eval(
         all_logits: (N, C) tensor on CPU.
         all_labels: (N,)   tensor on CPU.
     """
+    model.eval()   # enforce eval mode — guards against accidental model.train() upstream
     logits_list, labels_list = [], []
     for images, labels in loader:
         images = images.to(model_device)
@@ -277,7 +211,7 @@ def run_clean_eval(
 
 def run_adv_eval(
     attack,
-    model: nn.Module,
+    model,
     loader: DataLoader,
     model_device: str,
 ) -> torch.Tensor:
@@ -561,9 +495,18 @@ def main() -> None:
                 f"robust_acc={rob_acc:.4f}  asr={asr:.4f}  gap={rob_gap:.4f}"
             )
 
-            append_row(
-                RESULTS_FILE, model_name, compression, attack_name,
-                c_acc, rob_acc, asr, rob_gap,
+            save_results_to_csv(
+                results_dir=str(_ROOT / "results"),
+                model=model_name,
+                compression=compression,
+                defense=DEFENSE_NAME,
+                attack=attack_name,
+                clean_acc=c_acc,
+                robust_acc=rob_acc,
+                asr=asr,
+                robustness_gap_val=rob_gap,
+                phase=PHASE,
+                filename="phase2_atkd_results.csv",
             )
             print(
                 f"[phase2-ATKD] {compression:<6} × {attack_name:<5}: "
