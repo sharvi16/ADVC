@@ -109,8 +109,8 @@ def _load_fp32(timm_name: str, device: str) -> torch.nn.Module:
 
 def _load_int8(timm_name: str, config: dict, device: str) -> torch.nn.Module:
     """
-    Load INT8 quantized model.
-    Uses bitsandbytes if available, falls back to torch static quantization.
+    Load INT8 quantized model via bitsandbytes.
+    Raises RuntimeError if bitsandbytes is unavailable or fails to load.
     """
     backend = config["compression"]["int8"]["backend"]
 

@@ -1,20 +1,23 @@
 """
 scripts/setup_data_colab.py
 
-Downloads exactly 1000 ImageNet-1k validation images and saves them in
-torchvision ImageFolder format under data/imagenet/val/.
+Downloads ImageNet-1k images and saves them in torchvision ImageFolder format:
+  • 5 000 validation images → data/imagenet/val/
+  • 10 000 training images  → data/imagenet/train/   (needed for AT / AT+KD)
 
 Run once in Colab before any experiment:
     !python scripts/setup_data_colab.py --method a   # HuggingFace (recommended)
-    !python scripts/setup_data_colab.py --method b   # Kaggle
+    !python scripts/setup_data_colab.py --method b   # Kaggle (val only)
 
 Both produce:
     data/imagenet/val/
     ├── n01440764/
     │   ├── img_00000.JPEG
     │   └── ...
-    ├── n01443537/
-    └── ...
+    data/imagenet/train/
+    ├── n01440764/
+    │   ├── img_00000.JPEG
+    │   └── ...
 """
 
 import argparse
@@ -27,8 +30,10 @@ from pathlib import Path
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SEED = 42
-N_IMAGES = 1000
-VAL_DIR = "data/imagenet/val"
+N_IMAGES = 5000        # validation images  — must match dataset.val_subset_size in base.yaml
+N_TRAIN_IMAGES = 10000 # training images    — must match dataset.train_subset_size in base.yaml
+VAL_DIR   = "data/imagenet/val"
+TRAIN_DIR = "data/imagenet/train"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # METHOD A — HuggingFace datasets streaming (recommended)
@@ -206,6 +211,86 @@ def setup_method_b():
     shutil.rmtree(flat_dir, ignore_errors=True)
 
 
+# ── Training data (Method A only) ────────────────────────────────────────────
+#
+# AT and AT+KD (Phase 2) require 10 000 training images.
+# Uses the same HuggingFace streaming approach as setup_method_a() — no full
+# dataset download; only the images you need are fetched.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def setup_train():
+    """Stream 10 000 ImageNet-1k training images into data/imagenet/train/.
+
+    Requires the same HuggingFace login as setup_method_a().
+    Skips automatically if TRAIN_DIR already exists and is non-empty.
+    """
+    try:
+        from huggingface_hub import login
+    except ImportError:
+        os.system("pip install -q huggingface_hub")
+        from huggingface_hub import login
+
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        os.system("pip install -q datasets pillow")
+        from datasets import load_dataset
+
+    # Reuse same token logic as setup_method_a()
+    token = os.environ.get("HF_TOKEN", None)
+    if token is None:
+        try:
+            from google.colab import userdata
+            token = userdata.get("HF_TOKEN")
+        except Exception:
+            pass
+    if token:
+        login(token=token, add_to_git_credential=False)
+    else:
+        login()  # interactive prompt
+
+    print(f"\n[setup] Streaming {N_TRAIN_IMAGES} images from imagenet-1k train split …")
+
+    dataset = load_dataset(
+        "imagenet-1k",
+        split="train",
+        streaming=True,
+        trust_remote_code=True,
+    )
+    dataset = dataset.shuffle(seed=SEED, buffer_size=20000)
+
+    # Build label index → synset mapping from dataset features
+    label_to_synset = {}
+
+    saved = 0
+    for example in dataset:
+        if saved >= N_TRAIN_IMAGES:
+            break
+
+        if not label_to_synset:
+            try:
+                names = dataset.features["label"].names
+                label_to_synset = {i: name for i, name in enumerate(names)}
+            except Exception:
+                label_to_synset = {i: f"class_{i:04d}" for i in range(1000)}
+
+        label_id = example["label"]
+        synset = label_to_synset.get(label_id, f"class_{label_id:04d}")
+        class_dir = Path(TRAIN_DIR) / synset
+        class_dir.mkdir(parents=True, exist_ok=True)
+
+        img = example["image"]
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.save(class_dir / f"img_{saved:05d}.JPEG", "JPEG")
+
+        saved += 1
+        if saved % 500 == 0:
+            print(f"[train] {saved}/{N_TRAIN_IMAGES} saved …")
+
+    print(f"[setup] Done — {saved} training images written to {TRAIN_DIR}")
+
+
 # ── Verification ──────────────────────────────────────────────────────────────
 
 def verify():
@@ -233,12 +318,26 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # ── Validation data ───────────────────────────────────────────────────────
     if Path(VAL_DIR).exists() and any(Path(VAL_DIR).iterdir()):
-        print(f"[setup] {VAL_DIR} already exists and is non-empty — skipping download.")
+        print(f"[setup] {VAL_DIR} already exists and is non-empty — skipping val download.")
     else:
         if args.method == "a":
             setup_method_a()
         else:
             setup_method_b()
+
+    # ── Training data (Method A only — Kaggle method downloads val only) ───────
+    if args.method == "a":
+        if Path(TRAIN_DIR).exists() and any(Path(TRAIN_DIR).iterdir()):
+            print(f"[setup] {TRAIN_DIR} already exists and is non-empty — skipping train download.")
+        else:
+            setup_train()
+    else:
+        print(
+            "[setup] Method B downloads val data only.\n"
+            f"[setup] To get training data, re-run with --method a or\n"
+            f"[setup] manually place 10 000 train images under {TRAIN_DIR}/ in ImageFolder format."
+        )
 
     verify()
