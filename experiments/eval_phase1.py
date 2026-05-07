@@ -65,13 +65,37 @@ _IMAGENETTE_TO_IMAGENET: dict[str, int] = {
 }
 
 
-def _remap_subset_labels(dataset: ImageFolder) -> ImageFolder:
-    """Remap ImageFolder targets to ImageNet-1k indices for subset datasets.
+def _is_synset_id(name: str) -> bool:
+    """Return True if name looks like an ImageNet synset ID (e.g. 'n01440764')."""
+    return len(name) == 9 and name[0] == "n" and name[1:].isdigit()
 
-    No-op when the dataset already has 1000 classes (full ImageNet).
+
+def _remap_subset_labels(dataset: ImageFolder) -> ImageFolder:
+    """Remap ImageFolder targets to ImageNet-1k indices.
+
+    Two cases:
+
+    1. Full ImageNet-1k (synset-ID folder names like 'n01440764'):
+       ImageFolder alphabetical order == ImageNet-1k label order, so NO
+       remapping is needed.  Detected by checking folder name format, NOT
+       class count (count-based check breaks with <1000 classes downloaded).
+
+    2. ImageNette (10-class subset with synset-ID folders):
+       ImageFolder assigns indices 0-9 alphabetically, which do NOT match
+       the model's expected ImageNet-1k indices.  Remap using the lookup table.
     """
-    if len(dataset.classes) >= 1000:
+    sample_class = dataset.classes[0] if dataset.classes else ""
+
+    if _is_synset_id(sample_class):
+        # Folder names are synset IDs — alphabetical order == ImageNet label order.
+        # No remapping needed regardless of how many classes are present.
+        print(f"[data] Synset-ID folders detected ({len(dataset.classes)} classes) "
+              f"— labels already correct, skipping remap.")
         return dataset
+
+    # Folder names are NOT synset IDs (e.g. human-readable ImageNette names).
+    # Remap using the 10-entry lookup table.
+    print(f"[data] Non-synset folders detected — applying ImageNette→ImageNet remap.")
     new_samples = []
     for path, lbl in dataset.samples:
         synset = dataset.classes[lbl]

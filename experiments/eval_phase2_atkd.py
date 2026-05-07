@@ -73,13 +73,23 @@ _IMAGENETTE_TO_IMAGENET: dict[str, int] = {
 }
 
 
-def _remap_subset_labels(dataset: ImageFolder) -> ImageFolder:
-    """Remap ImageFolder targets to ImageNet-1k indices for subset datasets.
+def _is_synset_id(name: str) -> bool:
+    """Return True if name looks like an ImageNet synset ID (e.g. 'n01440764')."""
+    return len(name) == 9 and name[0] == "n" and name[1:].isdigit()
 
-    No-op when the dataset already has 1000 classes (full ImageNet).
+
+def _remap_subset_labels(dataset: ImageFolder) -> ImageFolder:
+    """Remap ImageFolder targets to ImageNet-1k indices.
+
+    Uses folder-name format (not class count) to detect full ImageNet:
+    synset-ID folders (n01440764) sort alphabetically == ImageNet label order.
     """
-    if len(dataset.classes) >= 1000:
+    sample_class = dataset.classes[0] if dataset.classes else ""
+    if _is_synset_id(sample_class):
+        print(f"[data] Synset-ID folders detected ({len(dataset.classes)} classes) "
+              f"\u2014 labels already correct, skipping remap.")
         return dataset
+    print("[data] Non-synset folders \u2014 applying ImageNette\u2192ImageNet remap.")
     new_samples = []
     for path, lbl in dataset.samples:
         synset = dataset.classes[lbl]
