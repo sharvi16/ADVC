@@ -52,27 +52,41 @@ TRAIN_DIR = "data/imagenet/train"
 # in the SAME order as ImageNet-1k labels — matching what the model expects.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CLASS_INDEX_URL = (
-    "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_class_index.json"
-)
+_CLASS_INDEX_URLS = [
+    # Google Storage — most reliably accessible from Colab
+    "https://storage.googleapis.com/download.tensorflow.org/data/imagenet_class_index.json",
+    # PyTorch Hub fallback
+    "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_class_index.json",
+    # AWS fallback
+    "https://s3.amazonaws.com/deep-learning-models/image-models/imagenet_class_index.json",
+]
 
 
 def _get_label_to_synset() -> dict:
-    """Return {label_int: synset_id_str} from PyTorch's imagenet_class_index.json.
+    """Return {label_int: synset_id_str} from a canonical imagenet_class_index.json.
 
-    Fetched once over HTTPS; tiny file (78 KB).
-    Falls back to zero-padded class names if the download fails.
+    Tries three URLs in order so a single CDN outage does not break the run.
+    All three sources share the same format:
+        {"0": ["n01440764", "tench"], "1": ["n01443537", "goldfish"], ...}
     """
-    try:
-        with urllib.request.urlopen(_CLASS_INDEX_URL, timeout=15) as resp:
-            class_index = json.load(resp)
-        mapping = {int(k): v[0] for k, v in class_index.items()}
-        print(f"[setup] Label → synset mapping loaded ({len(mapping)} classes).")
-        return mapping
-    except Exception as exc:
-        print(f"[setup] WARNING: could not fetch class index ({exc}).")
-        print("[setup] Falling back to zero-padded class names — accuracy will be WRONG.")
-        return {i: f"class_{i:04d}" for i in range(1000)}
+    for url in _CLASS_INDEX_URLS:
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                class_index = json.load(resp)
+            mapping = {int(k): v[0] for k, v in class_index.items()}
+            print(f"[setup] Label → synset mapping loaded ({len(mapping)} classes) from:\n[setup]   {url}")
+            return mapping
+        except Exception as exc:
+            print(f"[setup] Could not fetch {url}: {exc} — trying next URL …")
+
+    # All URLs failed — make it impossible to miss
+    print("[setup] " + "=" * 70)
+    print("[setup] FATAL: all class-index URLs failed.")
+    print("[setup] Folder names will be class_0000/ (WRONG) — accuracy will be ~0.")
+    print("[setup] Do NOT proceed with evaluation. Fix network access and re-run.")
+    print("[setup] " + "=" * 70)
+    return {i: f"class_{i:04d}" for i in range(1000)}
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +141,6 @@ def setup_method_a():
         "imagenet-1k",
         split="validation",
         streaming=True,
-        trust_remote_code=True,
     )
     dataset = dataset.shuffle(seed=SEED, buffer_size=5000)
 
@@ -290,7 +303,6 @@ def setup_train():
         "imagenet-1k",
         split="train",
         streaming=True,
-        trust_remote_code=True,
     )
     dataset = dataset.shuffle(seed=SEED, buffer_size=20000)
 
