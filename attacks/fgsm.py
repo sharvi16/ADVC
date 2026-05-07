@@ -89,7 +89,11 @@ if __name__ == "__main__":
 
     attack = build_attack(model, cfg)
 
-    dummy_images = torch.rand(2, 3, 224, 224).to(device)
+    import torchvision.transforms as T
+    mean = cfg["dataset"]["mean"]
+    std  = cfg["dataset"]["std"]
+    normalize = T.Normalize(mean=mean, std=std)
+    dummy_images = normalize(torch.rand(2, 3, 224, 224)).to(device)
     dummy_labels = torch.zeros(2, dtype=torch.long).to(device)
 
     adv_images = run_attack(attack, dummy_images, dummy_labels)

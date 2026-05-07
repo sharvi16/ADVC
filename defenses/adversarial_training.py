@@ -29,24 +29,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 import torchattacks
-from models.loader import load_config  # noqa: F401 — re-exported for convenience
-
-
-class _LogitsWrapper(nn.Module):
-    """Unwrap HuggingFace ImageClassifierOutput to a plain (N, C) tensor.
-
-    torchattacks expects model(x) to return a plain tensor.  INT8/INT4 models
-    loaded via HuggingFace return a dataclass with a .logits attribute.  This
-    thin wrapper makes both cases identical so FGSM can compute gradients.
-    """
-
-    def __init__(self, model: nn.Module) -> None:
-        super().__init__()
-        self.model = model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.model(x)
-        return out.logits if hasattr(out, "logits") else out
+from models.loader import load_config, LogitsWrapper  # noqa: F401 — load_config re-exported for convenience
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +338,7 @@ def adversarial_train(
     #
     # Use _LogitsWrapper so INT8/INT4 HuggingFace models (which return a
     # dataclass) expose a plain tensor interface to torchattacks.
-    fgsm = torchattacks.FGSM(_LogitsWrapper(model), eps=at_eps)
+    fgsm = torchattacks.FGSM(LogitsWrapper(model), eps=at_eps)
     fgsm.set_normalization_used(mean=mean, std=std)
 
     # Freeze backbone — only last 4 blocks + head will receive gradient updates.
@@ -410,7 +393,7 @@ def adversarial_train(
         model.train()
 
         # Show effective LR for this epoch (after LambdaLR scaling).
-        current_lr = scheduler.get_last_lr()[0] if epoch > 1 else lr * _warmup_lambda(0)
+        current_lr = optimizer.param_groups[0]["lr"]
         print(f"[AT] Epoch {epoch}/{epochs} — effective lr={current_lr:.2e}")
 
         running_loss = 0.0

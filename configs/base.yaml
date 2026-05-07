@@ -42,13 +42,13 @@ dataset:
 # Attack - FGSM
 fgsm:
   name: "fgsm"
-  eps: 0.03137 #adds noise
+  eps: 0.03137255   # L-inf perturbation budget: 8/255 ≈ 0.0314
   targeted: false
 
 # Attack - PGD
 pgd:
-  eps: 0.03137      # 8/255 — same as FGSM
-  alpha: 0.00784    # 2/255 — step size
+  eps: 0.03137255   # 8/255 — same as FGSM
+  alpha: 0.00784314 # 2/255 — step size
   steps: 20         # standard in robustness literature
 
 # Attack - Adversarial Patch
@@ -65,6 +65,8 @@ defense:
   # Per-compression learning rates.
   # AdamW + layer-freezing requires much lower LRs than SGD full fine-tune.
   # INT8/INT4 quantised weights are especially fragile — keep LR tiny.
+  # Ratio design (intentional): fp32/int4 = 10x (most fragile), fp32/int8 = 2x
+  # (INT8 is less fragile than INT4 but still benefits from a reduced LR).
   lr:
     fp32: 0.00001
     int8: 0.000005
@@ -72,7 +74,7 @@ defense:
   weight_decay: 0.01
   warmup_epochs: 1   # epoch 1 runs at lr/10; full lr from epoch 2 onward
   batch_size: 32
-  at_eps: 0.03137    # 8/255 — must match attack epsilon
+  at_eps: 0.03137255  # 8/255 — must match fgsm.eps exactly
   save_every_epoch: true
 
 # Defense - AT + Knowledge Distillation (AT+KD)

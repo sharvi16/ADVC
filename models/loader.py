@@ -11,6 +11,7 @@ Usage:
 """
 
 import torch
+import torch.nn as nn
 import timm
 import yaml
 from pathlib import Path
@@ -23,6 +24,26 @@ _DEFAULT_CFG = Path(__file__).resolve().parent.parent / "configs" / "base.yaml"
 
 CompressionLevel = Literal["fp32", "int8", "int4"]
 ModelName = Literal["deit_small"]
+
+
+class LogitsWrapper(nn.Module):
+    """Unwrap HuggingFace ImageClassifierOutput to a plain (N, C) logits tensor.
+
+    timm models return plain tensors. HuggingFace INT8/INT4 models loaded via
+    bitsandbytes return a dataclass with a .logits attribute.  This wrapper
+    makes both interfaces identical for torchattacks and eval loops.
+
+    Centralised here so adversarial_training.py, at_kd.py, and eval_phase1.py
+    all share one canonical implementation — fixing a bug here fixes it everywhere.
+    """
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.model(x)
+        return out.logits if hasattr(out, "logits") else out
 
 
 def load_config(config_path: str = None) -> dict:
@@ -114,27 +135,15 @@ def _load_int8(timm_name: str, config: dict, device: str) -> torch.nn.Module:
             return model
 
         except (ImportError, Exception) as exc:
-            print(
-                f"[loader] bitsandbytes INT8 failed ({exc}), "
-                "falling back to torch static quantization."
-            )
-            backend = "torch"
-
-    if backend == "torch":
-        # torch static quantization requires a calibration data loop between
-        # prepare() and convert() so that activation observers can collect
-        # min/max statistics.  Without calibration every activation range is
-        # [0, 0] and the quantised model produces garbage outputs.
-        # This pipeline does not supply calibration data to load_model(), so
-        # the torch fallback is not usable as-is.
-        # Resolution: ensure bitsandbytes is installed (pip install bitsandbytes)
-        # or add a calibration_loader argument to load_model() / _load_int8().
-        raise RuntimeError(
-            "[loader] torch static quantization INT8 fallback requires a "
-            "calibration data loop between prepare() and convert() — not "
-            "provided in the current pipeline.\n"
-            "Fix: pip install bitsandbytes   (or add calibration_loader support)"
-        )
+            # Do NOT fall back to torch static quantization — it runs on CPU only
+            # and uses a different quantisation scheme (fbgemm vs bnb), making
+            # results incomparable to bitsandbytes INT8 at 30-60x slower speed.
+            raise RuntimeError(
+                f"[loader] bitsandbytes INT8 failed: {exc}\n"
+                "Install with: pip install bitsandbytes\n"
+                "Ensure CUDA version matches: bitsandbytes requires CUDA >= 11.0\n"
+                "Do NOT fall back to torch static quantization — results are not comparable."
+            ) from exc
 
     raise ValueError(f"Unknown INT8 backend: {backend!r}")
 
