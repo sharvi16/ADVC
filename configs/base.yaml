@@ -73,7 +73,7 @@ defense:
     int4: 0.000001
   weight_decay: 0.01
   warmup_epochs: 1   # epoch 1 runs at lr/10; full lr from epoch 2 onward
-  batch_size: 32
+  batch_size: 16
   at_eps: 0.03137255  # 8/255 — must match fgsm.eps exactly
   save_every_epoch: true
 
@@ -84,7 +84,7 @@ at_kd:
 
 # Evaluation
 eval:
-  batch_size: 64
+  batch_size: 32
   num_workers: 0    # MUST BE 0 FOR COLAB to prevent silent DataLoader deadlocks
   latency_warmup_runs: 10 
   latency_measure_runs: 100 
