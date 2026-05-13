@@ -111,38 +111,36 @@ class PatchAttack:
 
         self.model.eval()
         
-        # Precompute the fixed background (everything except the patch)
-        bg = images_unnorm.detach() * (1.0 - mask)
+
 
         for _ in range(self.steps):
-            if patch.grad is not None:
-                patch.grad.zero_()
-
-            # Embed patch directly into the background.
-            # bg.clone() preserves gradients flowing back to the patch assigned via slicing.
-            adv_unnorm = bg.clone()
+            # Build patch_full differentiably — keeps patch in autograd graph
+            patch_full = torch.zeros(B, C, H, W, device=device)
             for b in range(B):
-                r, c = rows[b], cols[b]
-                adv_unnorm[b, :, r:r+ps, c:c+ps] = patch
+                patch_full[b, :, rows[b]:rows[b]+ps, cols[b]:cols[b]+ps] = patch
 
+            # mask multiply — gradient flows through patch_full back to patch
+            adv_unnorm = images_unnorm.detach() * (1.0 - mask) + patch_full * mask
             adv_unnorm = adv_unnorm.clamp(0.0, 1.0)
-            adv_norm = (adv_unnorm - mean_t) / std_t
+            adv_norm   = (adv_unnorm - mean_t) / std_t
 
             logits = self.model(adv_norm)
+            if hasattr(logits, "logits"):
+                logits = logits.logits
             loss = F.cross_entropy(logits, labels)
             loss.backward()
 
             with torch.no_grad():
                 patch.data.add_(self.lr * patch.grad.sign())
                 patch.data.clamp_(0.0, 1.0)
+            patch.grad.zero_()
 
         # Final composite \u2014 return re-normalised images to match input range
         with torch.no_grad():
-            adv_unnorm = bg.clone()
+            patch_full = torch.zeros(B, C, H, W, device=device)
             for b in range(B):
-                r, c = rows[b], cols[b]
-                adv_unnorm[b, :, r:r+ps, c:c+ps] = patch
-            
+                patch_full[b, :, rows[b]:rows[b]+ps, cols[b]:cols[b]+ps] = patch
+            adv_unnorm = images_unnorm.detach() * (1.0 - mask) + patch_full * mask
             adv_unnorm = adv_unnorm.clamp(0.0, 1.0)
             adv_images = (adv_unnorm - mean_t) / std_t  # re-normalise
 
