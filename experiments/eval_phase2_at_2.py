@@ -125,6 +125,43 @@ def build_val_loader(cfg: dict, device: str) -> DataLoader:
     )
 
 
+def build_patch_val_loader(cfg: dict, device: str) -> DataLoader:
+    ds_cfg = cfg["dataset"]
+    eval_cfg = cfg["eval"]
+
+    transform = T.Compose([
+        T.Resize(256),
+        T.CenterCrop(ds_cfg["image_size"]),
+        T.ToTensor(),
+        T.Normalize(mean=ds_cfg["mean"], std=ds_cfg["std"]),
+    ])
+
+    full_dataset = ImageFolder(root=str(_ROOT / ds_cfg["val_dir"]), transform=transform)
+    full_dataset = _remap_subset_labels(full_dataset)
+
+    rng = torch.Generator()
+    rng.manual_seed(cfg["seed"])
+    
+    n_full = min(ds_cfg["val_subset_size"], len(full_dataset))
+    n_patch = min(500, len(full_dataset))
+    
+    # Generate the exact same permutation as the full validation loader
+    indices = torch.randperm(len(full_dataset), generator=rng)[:n_full].tolist()
+    # Take the first n_patch (500) elements to ensure it's a strict prefix
+    patch_indices = indices[:n_patch]
+    
+    print(f"[phase2-PGDAT] Patch subset : {n_patch} images, seed={cfg['seed']}, first 5 indices={patch_indices[:5]}")
+    subset = Subset(full_dataset, patch_indices)
+
+    return DataLoader(
+        subset,
+        batch_size=eval_cfg["batch_size"],
+        shuffle=False,
+        num_workers=eval_cfg["num_workers"],
+        pin_memory=(device == "cuda"),
+    )
+
+
 def build_train_loader(cfg: dict, device: str) -> DataLoader:
     ds_cfg = cfg["dataset"]
     defense_cfg = cfg["defense_pgd"]
@@ -307,6 +344,7 @@ def main() -> None:
     print()
 
     val_loader = build_val_loader(cfg, device)
+    patch_loader = build_patch_val_loader(cfg, device)
     train_loader = build_train_loader(cfg, device) if not skip_training else None
     completed = load_completed_runs(RESULTS_FILE)
 
@@ -368,9 +406,9 @@ def main() -> None:
         mode_label = "checkpoint" if skip_training else "post-PGDAT"
         print(f"[phase2-PGDAT] {compression:<6}: model on {model_device} ({mode_label})")
 
-        print(f"[phase2-PGDAT] {compression:<6}: evaluating clean accuracy …")
+        print(f"[phase2-PGDAT] {compression:<6}: evaluating clean accuracy on full val subset …")
         try:
-            clean_logits, clean_labels = run_clean_eval(model, val_loader, model_device)
+            full_clean_logits, full_clean_labels = run_clean_eval(model, val_loader, model_device)
         except Exception as exc:
             print(f"[phase2-PGDAT] {compression:<6}: clean eval failed — {exc}")
             del raw_model, model
@@ -378,11 +416,28 @@ def main() -> None:
                 torch.cuda.empty_cache()
             continue
 
-        c_acc = clean_accuracy(clean_logits, clean_labels)
-        print(f"[phase2-PGDAT] {compression:<6}: clean_acc = {c_acc:.4f}")
+        full_c_acc = clean_accuracy(full_clean_logits, full_clean_labels)
+        print(f"[phase2-PGDAT] {compression:<6}: clean_acc = {full_c_acc:.4f}")
+
+        # Recompute clean logits for patch loader specifically
+        print(f"[phase2-PGDAT] {compression:<6}: evaluating clean accuracy on patch subset …")
+        patch_clean_logits, patch_clean_labels = run_clean_eval(model, patch_loader, model_device)
+        patch_c_acc = clean_accuracy(patch_clean_logits, patch_clean_labels)
+        print(f"[phase2-PGDAT] {compression:<6}: patch_clean_acc = {patch_c_acc:.4f}")
 
         for attack_name in remaining:
             print(f"[phase2-PGDAT] {compression:<6} × {attack_name:<5}: building attack …")
+
+            if attack_name == "patch":
+                eval_loader = patch_loader
+                eval_clean_logits = patch_clean_logits
+                eval_clean_labels = patch_clean_labels
+                eval_c_acc = patch_c_acc
+            else:
+                eval_loader = val_loader
+                eval_clean_logits = full_clean_logits
+                eval_clean_labels = full_clean_labels
+                eval_c_acc = full_c_acc
 
             if attack_name == "fgsm":
                 attack = fgsm_mod.build_attack(model, cfg)
@@ -393,16 +448,16 @@ def main() -> None:
             else:
                 raise ValueError(f"Unknown attack: {attack_name!r}")
 
-            print(f"[phase2-PGDAT] {compression:<6} × {attack_name:<5}: running on {len(val_loader.dataset)} images …")
+            print(f"[phase2-PGDAT] {compression:<6} × {attack_name:<5}: running on {len(eval_loader.dataset)} images …")
             try:
-                adv_logits = run_adv_eval(attack, model, val_loader, model_device)
+                adv_logits = run_adv_eval(attack, model, eval_loader, model_device)
             except Exception as exc:
                 print(f"[phase2-PGDAT] {compression:<6} × {attack_name:<5}: attack failed — {exc}")
                 continue
 
-            rob_acc = robust_accuracy(adv_logits, clean_labels)
-            asr = attack_success_rate(clean_logits, adv_logits, clean_labels)
-            rob_gap = robustness_gap(clean_logits, adv_logits, clean_labels)
+            rob_acc = robust_accuracy(adv_logits, eval_clean_labels)
+            asr = attack_success_rate(eval_clean_logits, adv_logits, eval_clean_labels)
+            rob_gap = robustness_gap(eval_clean_logits, adv_logits, eval_clean_labels)
 
             print(
                 f"[phase2-PGDAT] {compression:<6} × {attack_name:<5}: "
@@ -415,7 +470,7 @@ def main() -> None:
                 compression=compression,
                 defense=DEFENSE_NAME,
                 attack=attack_name,
-                clean_acc=c_acc,
+                clean_acc=eval_c_acc,
                 robust_acc=rob_acc,
                 asr=asr,
                 robustness_gap_val=rob_gap,
