@@ -83,15 +83,15 @@ defense_pgd:
   epochs: 7
   optimizer: "adamw"
   lr:
-    fp32: 0.00001
+    fp32: 0.00002
     int8: 0.000005
     int4: 0.000001
   weight_decay: 0.01
   warmup_epochs: 1
   batch_size: 16
   at_eps: 0.03137255
-  at_alpha: 0.00784314
-  at_steps: 5
+  at_alpha: 0.00392157
+  at_steps: 3       
   save_every_epoch: true
 
 # Defense - AT + Knowledge Distillation (AT+KD)
