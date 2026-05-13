@@ -275,10 +275,10 @@ def print_summary(results_path: str, model_name: str) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def load_atkd_checkpoint(
-    model: nn.Module,
+    model: torch.nn.Module,
     compression: str,
     cfg: dict,
-) -> nn.Module:
+) -> torch.nn.Module:
     """Load the final AT+KD checkpoint for the given compression level.
 
     INT4 checkpoints are saved as full model objects
