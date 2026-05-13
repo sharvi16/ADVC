@@ -77,6 +77,23 @@ defense:
   at_eps: 0.03137255  # 8/255 — must match fgsm.eps exactly
   save_every_epoch: true
 
+# Defense - PGD Adversarial Training (PGD-AT)
+defense_pgd:
+  name: "pgd_adversarial_training"
+  epochs: 7
+  optimizer: "adamw"
+  lr:
+    fp32: 0.00001
+    int8: 0.000005
+    int4: 0.000001
+  weight_decay: 0.01
+  warmup_epochs: 1
+  batch_size: 16
+  at_eps: 0.03137255
+  at_alpha: 0.00784314
+  at_steps: 5
+  save_every_epoch: true
+
 # Defense - AT + Knowledge Distillation (AT+KD)
 at_kd:
   temperature: 4.0   # softmax temperature for soft labels
@@ -94,5 +111,6 @@ paths:
   results_dir: "results"
   figures_dir: "results/figures"
   checkpoints_at_dir: "results/checkpoints/at"
+  checkpoints_pgdat_dir: "results/checkpoints/pgdat"
   checkpoints_atkd_dir: "results/checkpoints/atkd"
   drive_backup_dir: "/content/drive/MyDrive/research"
